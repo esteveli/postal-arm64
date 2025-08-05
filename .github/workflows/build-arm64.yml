@@ -1,0 +1,138 @@
+name: Build ARM64 Images
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: postal
+  FULL_IMAGE_NAME: ghcr.io/${{ github.repository }}/postal
+
+on:
+  schedule:
+    # Check for new tags every 6 hours
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Specific tag to build'
+        required: true
+        type: string
+
+jobs:
+  check-new-tags:
+    runs-on: ubuntu-latest
+    outputs:
+      new-tags: ${{ steps.find-new.outputs.new-tags }}
+      has-new: ${{ steps.find-new.outputs.has-new }}
+    steps:
+      - name: Get upstream tags and compare with built images
+        id: find-new
+        run: |
+          # Get latest tags from upstream postal repo
+          UPSTREAM_TAGS=$(curl -s "https://api.github.com/repos/postalserver/postal/tags" | jq -r '.[0:10] | map(.name)')
+          
+          # Get our existing image tags
+          EXISTING_TAGS=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/packages/container/${{ env.IMAGE_NAME }}/versions" | \
+            jq -r '.[].metadata.container.tags[]?' 2>/dev/null || echo "[]")
+          
+          # Find new tags (exist upstream but not in our registry)
+          NEW_TAGS=$(echo "$UPSTREAM_TAGS" | jq --argjson existing "$EXISTING_TAGS" \
+            'map(select(. as $tag | $existing | index($tag) | not))')
+          
+          echo "new-tags=$NEW_TAGS" >> $GITHUB_OUTPUT
+          
+          if [ "$(echo "$NEW_TAGS" | jq 'length')" -gt 0 ]; then
+            echo "has-new=true" >> $GITHUB_OUTPUT
+            echo "Found new tags: $(echo "$NEW_TAGS" | jq -r 'join(", ")')"
+          else
+            echo "has-new=false" >> $GITHUB_OUTPUT
+            echo "No new tags found"
+          fi
+
+  build-new-tags:
+    needs: check-new-tags
+    if: needs.check-new-tags.outputs.has-new == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        tag: ${{ fromJson(needs.check-new-tags.outputs.new-tags) }}
+    steps:
+      - name: Checkout upstream repository at tag
+        uses: actions/checkout@v4
+        with:
+          repository: postalserver/postal
+          ref: ${{ matrix.tag }}
+          fetch-depth: 1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          platforms: linux/arm64
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ARM64 image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ${{ env.FULL_IMAGE_NAME }}:${{ matrix.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          labels: |
+            org.opencontainers.image.title=Postal ARM64
+            org.opencontainers.image.description=ARM64 build of Postal mail server
+            org.opencontainers.image.source=https://github.com/postalserver/postal
+            org.opencontainers.image.version=${{ matrix.tag }}
+
+      - name: Update latest tag for most recent version
+        if: matrix.tag == fromJson(needs.check-new-tags.outputs.new-tags)[0]
+        run: |
+          docker buildx imagetools create \
+            ${{ env.FULL_IMAGE_NAME }}:${{ matrix.tag }} \
+            --tag ${{ env.FULL_IMAGE_NAME }}:latest
+
+  build-manual:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout upstream repository at specified tag
+        uses: actions/checkout@v4
+        with:
+          repository: postalserver/postal
+          ref: ${{ github.event.inputs.tag }}
+          fetch-depth: 1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          platforms: linux/arm64
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ARM64 image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ${{ env.FULL_IMAGE_NAME }}:${{ github.event.inputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          labels: |
+            org.opencontainers.image.title=Postal ARM64
+            org.opencontainers.image.description=ARM64 build of Postal mail server
+            org.opencontainers.image.source=https://github.com/postalserver/postal
+            org.opencontainers.image.version=${{ github.event.inputs.tag }}
