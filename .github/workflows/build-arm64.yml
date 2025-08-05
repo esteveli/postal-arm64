@@ -22,26 +22,46 @@ on:
 
 jobs:
   check-new-tags:
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     outputs:
       new-tags: ${{ steps.find-new.outputs.new-tags }}
       has-new: ${{ steps.find-new.outputs.has-new }}
     steps:
-      - name: Get upstream tags and compare with built images
+      - name: Checkout upstream repository
+        uses: actions/checkout@v4
+        with:
+          repository: postalserver/postal
+          fetch-depth: 0
+
+      - name: Find new tags
         id: find-new
         run: |
-          # Get latest tags from upstream postal repo
-          UPSTREAM_TAGS=$(curl -s "https://api.github.com/repos/postalserver/postal/tags" | jq '.[0:10] | map(.name)')
+          # Get latest 10 tags from git
+          UPSTREAM_TAGS=$(git tag --sort=-version:refname | head -10 | jq -R -s 'split("\n")[:-1]')
+          echo "Upstream tags: $UPSTREAM_TAGS"
           
-          # Get our existing image tags
-          EXISTING_TAGS=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            "https://api.github.com/repos/${{ github.repository }}/packages/container/${{ env.IMAGE_NAME }}/versions" | \
-            jq '[.[].metadata.container.tags[]?] // []' 2>/dev/null)
+          # Check which images don't exist in our registry
+          NEW_TAGS="["
+          FIRST=true
           
-          # Find new tags (exist upstream but not in our registry)
-          NEW_TAGS=$(echo "$UPSTREAM_TAGS" | jq --argjson existing "$EXISTING_TAGS" \
-            'map(select(. as $tag | $existing | index($tag) | not))')
+          for tag in $(echo "$UPSTREAM_TAGS" | jq -r '.[]'); do
+            echo "Checking if image exists: ${{ env.FULL_IMAGE_NAME }}:$tag"
+            
+            if ! docker manifest inspect ${{ env.FULL_IMAGE_NAME }}:$tag >/dev/null 2>&1; then
+              echo "Image $tag does not exist, adding to build list"
+              if [ "$FIRST" = true ]; then
+                NEW_TAGS="$NEW_TAGS\"$tag\""
+                FIRST=false
+              else
+                NEW_TAGS="$NEW_TAGS,\"$tag\""
+              fi
+            else
+              echo "Image $tag already exists, skipping"
+            fi
+          done
           
+          NEW_TAGS="$NEW_TAGS]"
           echo "new-tags=$NEW_TAGS" >> $GITHUB_OUTPUT
           
           if [ "$(echo "$NEW_TAGS" | jq 'length')" -gt 0 ]; then
@@ -54,7 +74,7 @@ jobs:
 
   build-new-tags:
     needs: check-new-tags
-    if: needs.check-new-tags.outputs.has-new == 'true'
+    if: github.event_name != 'workflow_dispatch' && needs.check-new-tags.outputs.has-new == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
