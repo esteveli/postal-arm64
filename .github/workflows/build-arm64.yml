@@ -27,12 +27,12 @@ jobs:
         id: find-new
         run: |
           # Get latest tags from upstream postal repo
-          UPSTREAM_TAGS=$(curl -s "https://api.github.com/repos/postalserver/postal/tags" | jq -r '.[0:10] | map(.name)')
+          UPSTREAM_TAGS=$(curl -s "https://api.github.com/repos/postalserver/postal/tags" | jq '.[0:10] | map(.name)')
           
           # Get our existing image tags
           EXISTING_TAGS=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             "https://api.github.com/repos/${{ github.repository }}/packages/container/${{ env.IMAGE_NAME }}/versions" | \
-            jq -r '.[].metadata.container.tags[]?' 2>/dev/null || echo "[]")
+            jq '[.[].metadata.container.tags[]?] // []' 2>/dev/null)
           
           # Find new tags (exist upstream but not in our registry)
           NEW_TAGS=$(echo "$UPSTREAM_TAGS" | jq --argjson existing "$EXISTING_TAGS" \
