@@ -1,5 +1,9 @@
 name: Build ARM64 Images
 
+permissions:
+  contents: read
+  packages: write
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: postal
